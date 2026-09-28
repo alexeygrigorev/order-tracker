@@ -1,0 +1,115 @@
+# ---------------------------------------------------------
+# Grafana Data Source Provisioning
+#
+# I provision all observability backends automatically so
+# Grafana can access metrics, logs, and traces without
+# requiring manual configuration from the user interface.
+#
+# Metrics -> Prometheus
+# Logs    -> Loki
+# Traces  -> Tempo
+# ---------------------------------------------------------
+
+apiVersion: 1
+
+# ---------------------------------------------------------
+# Data Sources
+# ---------------------------------------------------------
+
+datasources:
+  # -------------------------------------------------------
+  # Prometheus
+  #
+  # I use Prometheus as the metrics data source.
+  # Grafana connects to Prometheus through the internal
+  # Docker Compose network.
+  # -------------------------------------------------------
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+
+    # Docker Compose services can communicate using
+    # their service names as hostnames.
+    url: http://prometheus:9090
+
+    # I use Prometheus as the default Grafana data source
+    # because metrics are the main starting point for
+    # monitoring application health.
+    isDefault: true
+
+    editable: true
+
+  # -------------------------------------------------------
+  # Loki
+  #
+  # I use Loki as the log data source.
+  # Application logs arrive in Loki through the
+  # OpenTelemetry Collector.
+  # -------------------------------------------------------
+  - name: Loki
+    type: loki
+    access: proxy
+
+    # Grafana reaches Loki through the Docker network.
+    url: http://loki:3100
+
+    editable: true
+
+    jsonData:
+      # I create a derived field from the trace_id stored
+      # in each application log. This will allow me to
+      # navigate from a log entry to its related Tempo trace.
+      derivedFields:
+        - name: TraceID
+
+          # The application log contains the trace ID in
+          # the format: trace_id=<32-character trace ID>
+          matcherRegex: "trace_id=([0-9a-f]{32})"
+
+          # This value is passed to the Tempo data source
+          # when the derived field link is selected.
+          url: "$${__value.raw}"
+
+          # This UID must match the Tempo data source UID
+          # configured below.
+          datasourceUid: tempo
+
+  # -------------------------------------------------------
+  # Tempo
+  #
+  # I use Tempo as the distributed tracing data source.
+  # The OpenTelemetry Collector sends application traces
+  # to Tempo using OTLP.
+  # -------------------------------------------------------
+  - name: Tempo
+    type: tempo
+    access: proxy
+
+    # Grafana reaches Tempo through the Docker network.
+    url: http://tempo:3200
+
+    # I assign a stable UID so other Grafana data sources,
+    # such as Loki, can reference Tempo reliably.
+    uid: tempo
+
+    editable: true
+
+    jsonData:
+      # I enable trace-to-logs correlation so a trace can
+      # be connected back to logs from the same service.
+      tracesToLogsV2:
+        datasourceUid: Loki
+
+        # I use the service name stored in OpenTelemetry
+        # resource attributes to narrow the log search.
+        tags:
+          - key: service.name
+            value: service_name
+
+        # I keep the log search close to the trace time
+        # to avoid retrieving unrelated log records.
+        spanStartTimeShift: "-1m"
+        spanEndTimeShift: "1m"
+
+        filterByTraceID: true
+        filterBySpanID: true

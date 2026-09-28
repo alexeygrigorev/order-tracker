@@ -1,0 +1,110 @@
+# ---------------------------------------------------------
+# OpenTelemetry Collector Configuration
+#
+# This collector receives telemetry from the Order Tracker
+# application and routes each signal to its backend:
+#
+# Metrics -> Prometheus
+# Logs    -> Loki
+# Traces  -> Tempo
+#
+# I also keep the debug exporter enabled so I can inspect
+# telemetry directly from the Collector logs while testing.
+# ---------------------------------------------------------
+
+# ---------------------------------------------------------
+# Receivers
+# ---------------------------------------------------------
+
+receivers:
+  # I receive telemetry from the application using OTLP.
+  # Both gRPC and HTTP protocols are enabled.
+  otlp:
+    protocols:
+      # OTLP over gRPC uses port 4317.
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+      # OTLP over HTTP uses port 4318.
+      http:
+        endpoint: 0.0.0.0:4318
+
+# ---------------------------------------------------------
+# Processors
+# ---------------------------------------------------------
+
+processors:
+  # I batch telemetry before exporting it.
+  # This reduces the number of individual export operations
+  # and makes the telemetry pipeline more efficient.
+  batch: {}
+
+# ---------------------------------------------------------
+# Exporters
+# ---------------------------------------------------------
+
+exporters:
+  # I expose metrics on port 8889 so Prometheus can scrape them.
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+
+  # I send distributed traces to Tempo using OTLP over gRPC.
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      # TLS is disabled because all services communicate
+      # inside the local Docker Compose network.
+      insecure: true
+
+  # I send application logs to Loki using Loki's
+  # native OTLP HTTP ingestion endpoint.
+  otlphttp/loki:
+    endpoint: "http://loki:3100/otlp"
+    tls:
+      # TLS is not required for this local environment.
+      insecure: true
+
+  # I keep the debug exporter enabled during development.
+  # It allows me to verify received metrics, logs, and traces
+  # directly from the OpenTelemetry Collector container logs.
+  debug:
+    verbosity: basic
+
+# ---------------------------------------------------------
+# Service Pipelines
+# ---------------------------------------------------------
+
+service:
+  pipelines:
+    # Metrics pipeline:
+    # Order Tracker -> OTel Collector -> Prometheus
+    metrics:
+      receivers:
+        - otlp
+      processors:
+        - batch
+      exporters:
+        - prometheus
+        - debug
+
+    # Traces pipeline:
+    # Order Tracker -> OTel Collector -> Tempo
+    traces:
+      receivers:
+        - otlp
+      processors:
+        - batch
+      exporters:
+        - otlp/tempo
+        - debug
+
+    # Logs pipeline:
+    # Order Tracker -> OTel Collector -> Loki
+    logs:
+      receivers:
+        - otlp
+      processors:
+        - batch
+      exporters:
+        - otlphttp/loki
+        - debug
