@@ -4,3 +4,11 @@ __pycache__/
 *.pyc
 data/
 .env
+
+.bruin.yml
+# Local test artifacts
+.test-tmp-*/
+
+# Incident response runtime artifacts
+incident-response/incidents/
+responder/responder-input.json

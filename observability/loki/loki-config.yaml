@@ -1,0 +1,33 @@
+# I run Loki without authentication because this is a local
+# development environment used only for the homework.
+auth_enabled: false
+
+server:
+  # Loki exposes its HTTP API on port 3100.
+  http_listen_port: 3100
+
+common:
+  # I use a single Loki instance, so one replica is enough.
+  replication_factor: 1
+
+  # Loki stores its local data under this directory.
+  path_prefix: /tmp/loki
+
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  filesystem:
+    directory: /tmp/loki/chunks

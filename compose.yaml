@@ -1,27 +1,226 @@
 name: order-tracker
 
 services:
+  # ---------------------------------------------------------
+  # Order Tracker Application
+  #
+  # This is the main FastAPI application.
+  # It sends metrics, logs, and traces to the
+  # OpenTelemetry Collector using OTLP over HTTP.
+  # ---------------------------------------------------------
   app:
     image: order-tracker:${ORDER_TRACKER_TAG:-local}
     build: .
+
     ports:
+      # I expose the application only on localhost.
       - "127.0.0.1:${ORDER_TRACKER_PORT:-8000}:8000"
+
     environment:
+      # SQLite database location inside the container.
       ORDER_DB_PATH: /data/orders.db
+
+      # OpenTelemetry endpoints used by the application.
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://otel-collector:4318/v1/metrics
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://otel-collector:4318/v1/logs
+
     volumes:
+      # I keep the SQLite database in a persistent Docker volume.
       - orders:/data
+
+    depends_on:
+      # The Collector must be started before the application
+      # begins exporting telemetry.
+      otel-collector:
+        condition: service_started
+
     restart: unless-stopped
+
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      # I verify that the FastAPI application and database
+      # are reachable through the health endpoint.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)",
+        ]
       interval: 5s
       timeout: 3s
       retries: 12
 
+  # ---------------------------------------------------------
+  # OpenTelemetry Collector
+  #
+  # The Collector receives telemetry from the application
+  # and routes each signal to the correct backend:
+  #
+  # Metrics -> Prometheus
+  # Logs    -> Loki
+  # Traces  -> Tempo
+  # ---------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+
+    # I start the Collector with my custom configuration file.
+    command:
+      - "--config=/etc/otelcol-contrib/config.yaml"
+
+    volumes:
+      # I mount the Collector configuration as read-only.
+      - ./observability/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+
+    ports:
+      # OTLP over gRPC.
+      - "127.0.0.1:4317:4317"
+
+      # OTLP over HTTP.
+      - "127.0.0.1:4318:4318"
+
+      # Prometheus exporter endpoint.
+      - "127.0.0.1:8889:8889"
+
+    depends_on:
+      # Tempo receives traces from the Collector.
+      - tempo
+
+      # Loki receives logs from the Collector.
+      - loki
+
+    restart: unless-stopped
+
+  # ---------------------------------------------------------
+  # Prometheus
+  #
+  # Prometheus scrapes metrics exposed by the
+  # OpenTelemetry Collector.
+  # ---------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+
+    # I start Prometheus with my custom configuration file.
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+
+    volumes:
+      # I mount the Prometheus configuration as read-only.
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+    ports:
+      # Prometheus web interface and HTTP API.
+      - "127.0.0.1:9090:9090"
+
+    depends_on:
+      - otel-collector
+
+    restart: unless-stopped
+
+  # ---------------------------------------------------------
+  # Tempo
+  #
+  # Tempo stores distributed traces received from the
+  # OpenTelemetry Collector.
+  # ---------------------------------------------------------
+  tempo:
+    image: grafana/tempo:latest
+
+    # I start Tempo with my local configuration file.
+    command:
+      - "-config.file=/etc/tempo.yaml"
+
+    volumes:
+      # I mount the Tempo configuration as read-only.
+      - ./observability/tempo/tempo.yaml:/etc/tempo.yaml:ro
+
+    ports:
+      # Tempo HTTP API.
+      - "127.0.0.1:3200:3200"
+
+    restart: unless-stopped
+
+  # ---------------------------------------------------------
+  # Loki
+  #
+  # Loki stores application logs received from the
+  # OpenTelemetry Collector.
+  # ---------------------------------------------------------
+  loki:
+    image: grafana/loki:latest
+
+    # I start Loki with my local configuration file.
+    command:
+      - "-config.file=/etc/loki/local-config.yaml"
+
+    volumes:
+      # I mount the Loki configuration as read-only.
+      - ./observability/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+
+    ports:
+      # Loki HTTP API.
+      - "127.0.0.1:3100:3100"
+
+    restart:
+      unless-stopped
+
+      # ---------------------------------------------------------
+  # Grafana
+  #
+  # Grafana provides a single interface for exploring
+  # metrics, logs, and traces from the observability stack.
+  #
+  # Metrics -> Prometheus
+  # Logs    -> Loki
+  # Traces  -> Tempo
+  # ---------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+
+    ports:
+      # I expose the Grafana web interface only on localhost.
+      - "127.0.0.1:3000:3000"
+
+    volumes:
+      # I mount the provisioning directory so Grafana
+      # automatically creates the configured data sources.
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+
+    environment:
+      # These credentials are only used for the local
+      # development environment.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+    depends_on:
+      # Grafana uses these services as its observability
+      # data sources.
+      - prometheus
+      - loki
+      - tempo
+
+    restart: unless-stopped
+
+# ---------------------------------------------------------
+# Persistent Volumes
+# ---------------------------------------------------------
+
 volumes:
+  # I use this volume to keep order data when the
+  # application container is recreated.
   orders:
+
+# ---------------------------------------------------------
+# Docker Network
+#
+# All services communicate with each other using their
+# Docker Compose service names.
+# ---------------------------------------------------------
 
 networks:
   default:
     ipam:
       config:
+        # I use a configurable subnet to avoid conflicts
+        # with other local Docker networks.
         - subnet: ${ORDER_TRACKER_SUBNET:-10.215.24.0/24}
